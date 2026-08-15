@@ -87,6 +87,21 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
+def extract_retry_after_seconds(error: Any) -> Optional[float]:
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    if headers is None or not hasattr(headers, "get"):
+        headers = error
+    if headers is None or not hasattr(headers, "get"):
+        return None
+    try:
+        raw = headers.get("retry-after")
+        if raw is None:
+            raw = headers.get("Retry-After")
+    except Exception:
+        return None
+    return parse_retry_after_seconds(raw)
+
+
 def jittered_backoff(
     attempt: int,
     *,

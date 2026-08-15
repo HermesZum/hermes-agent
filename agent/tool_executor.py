@@ -93,6 +93,17 @@ def _budget_for_agent(agent) -> BudgetConfig:
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
+
+def _normalize_tool_signature(name: str, args: dict) -> str:
+    return f"{name}:{json.dumps(args, sort_keys=True, default=str)}"
+
+
+def _parse_tool_arguments(raw: str):
+    try:
+        return json.loads(raw), None
+    except Exception as exc:
+        return {}, f"[Malformed tool arguments: {exc}]"
+
 _MAX_TOOL_WORKERS = 8
 _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
@@ -1012,6 +1023,30 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             )
         return
 
+    # ── Duplicate-call detector ─────────────────────────────────────
+    _dup_state = getattr(agent, "_turn_tool_signatures", None)
+    if _dup_state is not None:
+        for _tc in tool_calls:
+            _parsed = _parse_tool_arguments(_tc.function.arguments)[0] or {}
+            _sig = _normalize_tool_signature(_tc.function.name, _parsed)
+            _dup_state["counts"][_sig] = _dup_state["counts"].get(_sig, 0) + 1
+            _dup_state["signatures"].append(_sig)
+            if _dup_state["counts"][_sig] >= 3:
+                _tool_name = _sig.split(":", 1)[0]
+                agent._emit_status(
+                    f"⚠️ Duplicate tool-call limit reached for {_tool_name}; stopping."
+                )
+                agent._last_tool_result_sentinel = "__duplicate_tool_limit__"
+                agent._last_tool_result_name = _tool_name
+                for _dup_tc in tool_calls:
+                    messages.append(make_tool_result_message(
+                        _dup_tc.function.name,
+                        f"[Stopped: duplicate tool-call limit reached for {_tool_name}]",
+                        getattr(_dup_tc, "id", "") or "",
+                        effect_disposition="none",
+                    ))
+                return
+
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     # (tool call, resolved name, parsed args, middleware trace, parse error,
     # tool-search scope block)
@@ -1815,6 +1850,23 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     and /steer injection — used when this call is one segment of a larger
     mixed batch and the segmented dispatcher owns the turn-end work.
     """
+    # ── Duplicate-call detector ─────────────────────────────────────
+    _dup_state = getattr(agent, "_turn_tool_signatures", None)
+    if _dup_state is not None:
+        for _tc in assistant_message.tool_calls:
+            _parsed = _parse_tool_arguments(_tc.function.arguments)[0] or {}
+            _sig = _normalize_tool_signature(_tc.function.name, _parsed)
+            _dup_state["counts"][_sig] = _dup_state["counts"].get(_sig, 0) + 1
+            _dup_state["signatures"].append(_sig)
+            if _dup_state["counts"][_sig] >= 3:
+                _tool_name = _sig.split(":", 1)[0]
+                agent._emit_status(
+                    f"⚠️ Duplicate tool-call limit reached for {_tool_name}; stopping."
+                )
+                agent._last_tool_result_sentinel = "__duplicate_tool_limit__"
+                agent._last_tool_result_name = _tool_name
+                return
+
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
 

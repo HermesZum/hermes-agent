@@ -43,6 +43,10 @@ def _is_deepseek_thinking_model(model: str | None) -> bool:
     return m == "deepseek-reasoner"
 
 
+def _is_big_pickle_model(model: str | None) -> bool:
+    return _flat_model_name(model) == "big-pickle"
+
+
 def _is_glm_5_2_model(model: str | None) -> bool:
     """Detect GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
     m = _flat_model_name(model)
@@ -147,6 +151,56 @@ opencode_zen = ProviderProfile(
     default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
 )
+
+# Per-model max tokens to prevent reasoning-token truncation.
+# big-pickle on OpenCode Zen has 32k max output; reasoning tokens consume
+# most of this on agent prompts, leaving <1k for visible output.
+# Cap at 8192 to leave ~24k for reasoning tokens.
+# Apply same cap to other free-tier reasoning models on OpenCode Zen
+# that are used in fallback chains or have 32k output limits.
+_ocz_model_max_tokens = {
+    "big-pickle": 8192,
+    "nemotron-3-ultra-free": 8192,
+    "nemotron-3.5-lightning-free": 8192,
+    "deepseek-v4-flash-free": 8192,
+    "glm-5.2": 8192,
+    "glm-5.1": 8192,
+    "glm-5": 8192,
+    "minimax-m3": 8192,
+    "minimax-m2.7": 8192,
+    "minimax-m2.5": 8192,
+    "kimi-k3": 8192,
+    "kimi-k2.7-code": 8192,
+    "kimi-k2.6": 8192,
+    "kimi-k2.5": 8192,
+    "qwen3.6-plus": 8192,
+    "qwen3.5-plus": 8192,
+    "gpt-5.6-sol": 8192,
+    "gpt-5.6-terra": 8192,
+    "gpt-5.6-luna": 8192,
+    "gpt-5.5": 8192,
+    "gpt-5.5-pro": 8192,
+    "gpt-5.4": 8192,
+    "gpt-5.4-pro": 8192,
+    "gpt-5.4-mini": 8192,
+    "gpt-5.4-nano": 8192,
+    "gpt-5.3-codex-spark": 8192,
+    "gpt-5.3-codex": 8192,
+    "gpt-5.2": 8192,
+    "gpt-5.2-codex": 8192,
+    "gpt-5.1": 8192,
+    "gpt-5.1-codex-max": 8192,
+    "gpt-5.1-codex": 8192,
+    "gpt-5.1-codex-mini": 8192,
+    "gpt-5": 8192,
+    "gpt-5-codex": 8192,
+    "gpt-5-nano": 8192,
+}
+
+def _ocz_get_max_tokens(model: str | None) -> int | None:
+    return _ocz_model_max_tokens.get(_flat_model_name(model))
+
+opencode_zen.get_max_tokens = _ocz_get_max_tokens
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go",

@@ -82,6 +82,7 @@ from agent.prompt_caching import (
 )
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
+    extract_retry_after_seconds,
     is_zai_coding_overload_error,
     jittered_backoff,
     zai_coding_overload_retry_ceiling,
@@ -6188,22 +6189,22 @@ def run_conversation(
                         "billing_block": _billing_block,
                     }
 
-                # For rate limits, respect the Retry-After header if present
+                # For rate limits, respect the Retry-After header if present.
+                # ``extract_retry_after_seconds`` handles both numeric and HTTP-date
+                # forms, and falls back cleanly when the header is absent.
                 _retry_after = None
                 if is_rate_limited:
-                    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
-                            try:
-                                # Cap at 10 minutes. Anthropic Tier 1 input-token
-                                # buckets reset in ~171s, so a 120s cap caused us to
-                                # retry before the actual reset window and re-trip the
-                                # limit. 600s covers all realistic provider reset
-                                # windows while still rejecting pathological values. (#26293)
-                                _retry_after = min(float(_ra_raw), 600)
-                            except (TypeError, ValueError):
-                                pass
+                    try:
+                        _retry_after = extract_retry_after_seconds(api_error)
+                    except Exception:
+                        _retry_after = None
+                    if _retry_after is not None:
+                        # Cap at 10 minutes. Anthropic Tier 1 input-token
+                        # buckets reset in ~171s, so a 120s cap caused us to
+                        # retry before the actual reset window and re-trip the
+                        # limit. 600s covers all realistic provider reset
+                        # windows while still rejecting pathological values. (#26293)
+                        _retry_after = min(float(_retry_after), 600)
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
@@ -7065,6 +7066,29 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                # ── Duplicate-call detector: handle executor short-circuit ──
+                _dup_sentinel = getattr(agent, "_last_tool_result_sentinel", None)
+                if _dup_sentinel == "__duplicate_tool_limit__":
+                    _dup_tool_name = getattr(agent, "_last_tool_result_name", "") or "a tool"
+                    _turn_exit_reason = "duplicate_tool_call_limit"
+                    final_response = (
+                        f"Stopped: the same tool call was repeated too many times in this turn ({_dup_tool_name}). "
+                        f"Aborting further tool use for this turn."
+                    )
+                    messages.append({"role": "assistant", "content": final_response})
+                    agent._emit_status(
+                        f"⚠️ Duplicate tool-call limit reached for {_dup_tool_name}"
+                    )
+                    if final_response:
+                        agent._safe_print(f"\n{final_response}\n")
+                        if agent.stream_delta_callback:
+                            try:
+                                agent.stream_delta_callback(final_response)
+                                agent.stream_delta_callback(None)
+                            except Exception:
+                                pass
+                    break
 
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send
