@@ -177,6 +177,7 @@ _BILLING_ERROR_CODES = frozenset({
     "model_not_supported_on_free_tier",
     "member_spend_cap_exceeded",
     _XAI_SPENDING_LIMIT_ERROR_CODE,
+    "free_usage_limit_error",
 })
 
 # Patterns that indicate rate limiting (transient, will resolve)
