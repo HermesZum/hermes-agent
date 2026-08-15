@@ -177,6 +177,7 @@ _BILLING_ERROR_CODES = frozenset({
     "model_not_supported_on_free_tier",
     "member_spend_cap_exceeded",
     _XAI_SPENDING_LIMIT_ERROR_CODE,
+    "freeusagelimiterror",
     "free_usage_limit_error",
 })
 
@@ -1220,6 +1221,20 @@ def _classify_by_status(
         )
 
     if status_code == 429:
+        # OpenCode Console free-tier exhaustion: body.error.type == FreeUsageLimitError.
+        # This is hard quota exhaustion, not a transient rate limit. Retrying burns
+        # retry budget without recovery, so fail fast and fallback instead.
+        err_obj = (body or {}).get("error") if isinstance(body, dict) else None
+        if (
+            isinstance(err_obj, dict)
+            and str(err_obj.get("type", "")).strip().lower() == "freeusagelimiterror"
+        ):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         # Already checked long_context_tier above. Some providers (notably
         # Z.AI / Zhipu) reuse HTTP 429 for server-wide overload — same status
         # code as a true per-credential rate limit, but the credential is
