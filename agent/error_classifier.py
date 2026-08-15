@@ -1221,14 +1221,14 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # OpenCode Console free-tier exhaustion: body.error.type == FreeUsageLimitError.
-        # This is hard quota exhaustion, not a transient rate limit. Retrying burns
-        # retry budget without recovery, so fail fast and fallback instead.
+        # OpenCode Console free-tier exhaustion: body.error.type == FreeUsageLimitError,
+        # or body.type == FreeUsageLimitError in some OpenCode dumps. This is hard
+        # quota exhaustion, not a transient rate limit. Retrying burns retry budget
+        # without recovery, so fail fast and fallback instead.
         err_obj = (body or {}).get("error") if isinstance(body, dict) else None
-        if (
-            isinstance(err_obj, dict)
-            and str(err_obj.get("type", "")).strip().lower() == "freeusagelimiterror"
-        ):
+        outer_type = str((body or {}).get("type", "")).strip().lower() if isinstance(body, dict) else ""
+        inner_type = str(err_obj.get("type", "")).strip().lower() if isinstance(err_obj, dict) else ""
+        if outer_type == "freeusagelimiterror" or inner_type == "freeusagelimiterror":
             return result_fn(
                 FailoverReason.billing,
                 retryable=False,

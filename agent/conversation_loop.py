@@ -4464,6 +4464,34 @@ def run_conversation(
                         )
                         continue
 
+                if (
+                    classified.reason == FailoverReason.billing
+                    and getattr(api_error, "status_code", None) == 429
+                    and (
+                        str(getattr(getattr(api_error, "body", {}), "type", "")).strip().lower() == "freeusagelimiterror"
+                        or str(getattr(getattr(api_error, "error", {}), "type", "")).strip().lower() == "freeusagelimiterror"
+                    )
+                ):
+                    # Hard free-tier quota wall. No amount of retrying or
+                    # credential rotation recovers this; bail out and surface
+                    # the billing outcome instead of burning the retry budget.
+                    logger.error(
+                        "%sFreeUsageLimitError detected (hard free-tier quota exhausted). "
+                        "Skipping retries and returning billing terminal result. provider=%s model=%s",
+                        agent.log_prefix, _provider, _model,
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": _billing_terminal_label(
+                            agent._summarize_api_error(api_error),
+                            classified.billing_unverified,
+                        ),
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "error": api_error,
+                    }
+
                 recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,
                     has_retried_429=_retry.has_retried_429,
@@ -5086,6 +5114,7 @@ def run_conversation(
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
                     is_rate_limited
+                    or classified.reason == FailoverReason.billing
                     or (_is_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
@@ -6205,9 +6234,28 @@ def run_conversation(
                         # limit. 600s covers all realistic provider reset
                         # windows while still rejecting pathological values. (#26293)
                         _retry_after = min(float(_retry_after), 600)
-                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                # ``FreeUsageLimitError`` is a hard free-tier wall, not a
+                # transient throttle. Retrying it burns quota and does not
+                # recover. Skip backoff entirely so we surface the billing
+                # outcome immediately instead of treating it like a normal
+                # rate limit.
+                _error_type = (
+                    str(getattr(getattr(api_error, "body", {}), "type", "")).strip().lower()
+                    or str(getattr(getattr(api_error, "error", {}), "type", "")).strip().lower()
+                )
+                _is_free_usage_limit_error = (
+                    classified.reason == FailoverReason.billing
+                    and getattr(api_error, "status_code", None) == 429
+                    and _error_type == "freeusagelimiterror"
+                )
+                if _is_free_usage_limit_error:
+                    wait_time = 0.0
+                elif is_rate_limited:
+                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                else:
+                    wait_time = jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
-                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
+                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after and not _is_free_usage_limit_error:
                     wait_time, _backoff_policy = adaptive_rate_limit_backoff(
                         retry_count,
                         base_url=str(_base),
