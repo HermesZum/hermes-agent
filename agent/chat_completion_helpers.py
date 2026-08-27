@@ -2891,12 +2891,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
-        # Phase 2.3: stable tool definition ordering for prefix-cache warmth.
-        if tools_for_api:
-            tools_for_api = sorted(
-                tools_for_api,
-                key=lambda tool: ((tool or {}).get("function") or {}).get("name") or "",
-            )
         if agent.prefill_messages:
             sys_offset = 1 if effective_system else 0
             for idx, pfm in enumerate(agent.prefill_messages):
