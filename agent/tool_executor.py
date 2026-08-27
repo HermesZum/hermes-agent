@@ -98,12 +98,6 @@ def _normalize_tool_signature(name: str, args: dict) -> str:
     return f"{name}:{json.dumps(args, sort_keys=True, default=str)}"
 
 
-def _parse_tool_arguments(raw: str):
-    try:
-        return json.loads(raw), None
-    except Exception as exc:
-        return {}, f"[Malformed tool arguments: {exc}]"
-
 _MAX_TOOL_WORKERS = 8
 _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch

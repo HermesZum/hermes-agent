@@ -4475,6 +4475,12 @@ def run_conversation(
                     # Hard free-tier quota wall. No amount of retrying or
                     # credential rotation recovers this; bail out and surface
                     # the billing outcome instead of burning the retry budget.
+                    # NOTE: _provider/_model are normally assigned further down
+                    # this handler (per-attempt logging); this branch can fire
+                    # on the FIRST error of a turn, before that assignment ran,
+                    # so resolve them defensively here (fork bug 2026-08-27).
+                    _provider = getattr(agent, "provider", "unknown")
+                    _model = getattr(agent, "model", "unknown")
                     logger.error(
                         "%sFreeUsageLimitError detected (hard free-tier quota exhausted). "
                         "Skipping retries and returning billing terminal result. provider=%s model=%s",
